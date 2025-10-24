@@ -9,6 +9,8 @@ dependencies = [
     "torch>=2.9.0",
     "wandb>=0.17",
     "tiktoken>=0.6.0",
+    "requests>=2.32.3",
+    "pyarrow>=16.1.0",
 ]
 
 [dependency-groups]
