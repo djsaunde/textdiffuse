@@ -145,12 +145,30 @@ def main():
         action="store_true",
         help="Disable automatic downloading of missing FineWeb shards",
     )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        choices=("fp32", "bf16"),
+        default="fp32",
+        help="Numerical precision to use for training",
+    )
     args = parser.parse_args()
     print(args)
 
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if args.precision == "bf16":
+        if device.type == "cuda":
+            if not torch.cuda.is_bf16_supported():
+                msg = "Requested bf16 precision but CUDA device does not support bf16."
+                raise RuntimeError(msg)
+        else:
+            try:
+                torch.zeros(1, dtype=torch.bfloat16)
+            except RuntimeError as exc:  # pragma: no cover - cpu lacking bf16
+                raise RuntimeError("Current platform does not support bf16 precision.") from exc
 
     if args.dataset == "tiny":
         dataloader = create_tiny_shakespeare_dataloader(
@@ -221,6 +239,7 @@ def main():
                 "fineweb_shard_offset": args.fineweb_shard_offset,
                 "fineweb_docs_per_shard": args.fineweb_docs_per_shard,
                 "fineweb_max_tokens": args.fineweb_max_tokens,
+                "precision": args.precision,
             },
         )
 
@@ -230,6 +249,9 @@ def main():
     last_log_time = wall_start
     last_log_step = 0
     last_log_tokens = 0
+    autocast_enabled = args.precision == "bf16"
+    autocast_device = "cuda" if device.type == "cuda" else "cpu"
+
     for epoch in range(args.num_epochs):
         for input_ids in dataloader:
             step += 1
@@ -256,16 +278,21 @@ def main():
                 continue
 
             attention_mask = input_ids != pad_token_id
-            logits = model(
-                masked_tokens,
-                timesteps=timesteps,
-                attention_mask=attention_mask,
-            )
+            with torch.autocast(
+                device_type=autocast_device,
+                dtype=torch.bfloat16,
+                enabled=autocast_enabled,
+            ):
+                logits = model(
+                    masked_tokens,
+                    timesteps=timesteps,
+                    attention_mask=attention_mask,
+                )
 
-            target_tokens = input_ids[mask]
-            pred_logits = logits[mask]
+                target_tokens = input_ids[mask]
+                pred_logits = logits[mask]
 
-            loss = F.cross_entropy(pred_logits, target_tokens)
+                loss = F.cross_entropy(pred_logits, target_tokens)
 
             optim.zero_grad()
             loss.backward()
