@@ -148,8 +148,8 @@ def main():
     parser.add_argument(
         "--precision",
         type=str,
-        choices=("fp32", "bf16"),
-        default="fp32",
+        choices=("bf16", "fp32"),
+        default="bf16",
         help="Numerical precision to use for training",
     )
     args = parser.parse_args()
@@ -159,16 +159,24 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if args.precision == "bf16":
+    autocast_enabled = False
+    autocast_device = "cuda" if device.type == "cuda" else "cpu"
+    requested_bf16 = args.precision == "bf16"
+    if requested_bf16:
         if device.type == "cuda":
             if not torch.cuda.is_bf16_supported():
-                msg = "Requested bf16 precision but CUDA device does not support bf16."
-                raise RuntimeError(msg)
+                print("CUDA device lacks bf16 support; falling back to fp32")
+                requested_bf16 = False
         else:
             try:
                 torch.zeros(1, dtype=torch.bfloat16)
             except RuntimeError as exc:  # pragma: no cover - cpu lacking bf16
-                raise RuntimeError("Current platform does not support bf16 precision.") from exc
+                print("CPU lacks bf16 support; falling back to fp32")
+                requested_bf16 = False
+
+    if requested_bf16:
+        autocast_enabled = True
+    precision_used = "bf16" if autocast_enabled else "fp32"
 
     if args.dataset == "tiny":
         dataloader = create_tiny_shakespeare_dataloader(
@@ -239,7 +247,8 @@ def main():
                 "fineweb_shard_offset": args.fineweb_shard_offset,
                 "fineweb_docs_per_shard": args.fineweb_docs_per_shard,
                 "fineweb_max_tokens": args.fineweb_max_tokens,
-                "precision": args.precision,
+                "precision_requested": args.precision,
+                "precision_used": precision_used,
             },
         )
 
@@ -418,7 +427,9 @@ def main():
                             ).view_as(current_tokens)
                             current_tokens = torch.where(step_mask, sampled, current_tokens)
 
-                            if args.generation_remask == "confidence":
+                            current_mask = current_mask & ~active.unsqueeze(1)
+
+                            if args.generation_remask == "confidence" and t > 0:
                                 current_tokens, current_mask, last_confidences = (
                                     confidence_based_remask(
                                         logits=logits_step,
@@ -430,7 +441,7 @@ def main():
                                     )
                                 )
                                 current_mask &= generation_mask
-                            elif args.generation_remask == "uniform":
+                            elif args.generation_remask == "uniform" and t > 0:
                                 current_tokens, current_mask = uniform_random_remask(
                                     tokens=current_tokens,
                                     current_mask=current_mask,

@@ -8,6 +8,8 @@ from typing import Optional
 import torch
 from torch import Tensor, nn
 
+from .triton_attention import triton_attention
+
 
 @dataclass
 class DiffusionModelConfig:
@@ -56,6 +58,7 @@ class TransformerBlock(nn.Module):
             dropout=config.dropout,
             batch_first=True,
         )
+        self.use_triton = torch.cuda.is_available()
         self.attn_norm = nn.LayerNorm(config.d_model)
         self.ff_norm = nn.LayerNorm(config.d_model)
         ff_hidden = int(config.d_model * config.ff_mult)
@@ -70,13 +73,24 @@ class TransformerBlock(nn.Module):
     def forward(self, x: Tensor, key_padding_mask: Optional[Tensor] = None) -> Tensor:
         residual = x
         attn_input = self.attn_norm(x)
-        attn_output, _ = self.self_attn(
-            attn_input,
-            attn_input,
-            attn_input,
-            need_weights=False,
-            key_padding_mask=key_padding_mask,
-        )
+        use_triton = self.use_triton and attn_input.is_cuda
+        if use_triton:
+            qkv = attn_input.view(attn_input.size(0), attn_input.size(1), self.num_heads, self.head_dim)
+            qkv = qkv.permute(0, 2, 1, 3)
+            if key_padding_mask is not None:
+                mask = key_padding_mask
+            else:
+                mask = None
+            attn_output = triton_attention(qkv, qkv, qkv, mask)
+            attn_output = attn_output.permute(0, 2, 1, 3).reshape_as(attn_input)
+        else:
+            attn_output, _ = self.self_attn(
+                attn_input,
+                attn_input,
+                attn_input,
+                need_weights=False,
+                key_padding_mask=key_padding_mask,
+            )
         x = residual + attn_output
         residual = x
         x = self.ff_norm(x)
