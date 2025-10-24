@@ -138,13 +138,15 @@ class TinyShakespeareTiktokenDataset(Dataset[Tensor]):
         except Exception:
             encoding = tiktoken.get_encoding(encoding_name)
 
-        specials = {
-            PAD_TOKEN: encoding.n_vocab,
-            MASK_TOKEN: encoding.n_vocab + 1,
+        self.encoding = encoding
+        self.base_vocab_size = encoding.n_vocab
+        self.special_tokens = {
+            PAD_TOKEN: self.base_vocab_size,
+            MASK_TOKEN: self.base_vocab_size + 1,
         }
-        self.encoding = encoding.with_special_tokens(specials)
-        self.pad_token_id = specials[PAD_TOKEN]
-        self.mask_token_id = specials[MASK_TOKEN]
+        self.id_to_special = {idx: name for name, idx in self.special_tokens.items()}
+        self.pad_token_id = self.special_tokens[PAD_TOKEN]
+        self.mask_token_id = self.special_tokens[MASK_TOKEN]
         self.seq_len = seq_len
         self.step = step or seq_len
 
@@ -157,7 +159,7 @@ class TinyShakespeareTiktokenDataset(Dataset[Tensor]):
 
     @property
     def vocab_size(self) -> int:
-        return self.encoding.n_vocab
+        return self.base_vocab_size + len(self.special_tokens)
 
     def __len__(self) -> int:
         total = self._encoded.size(0) - self.seq_len
@@ -175,7 +177,7 @@ class TinyShakespeareTiktokenDataset(Dataset[Tensor]):
         if isinstance(token_ids, Tensor):
             if token_ids.ndim == 1:
                 ids = token_ids.detach().cpu().tolist()
-                return self.encoding.decode(ids)
+                return self._decode_sequence(ids)
             if token_ids.ndim == 2:
                 return [self.decode(row) for row in token_ids]
             msg = "decode expects a 1D or 2D tensor"
@@ -185,7 +187,27 @@ class TinyShakespeareTiktokenDataset(Dataset[Tensor]):
             return [self.decode(item) for item in token_ids]
 
         ids = [int(idx) for idx in token_ids]
-        return self.encoding.decode(ids)
+        return self._decode_sequence(ids)
+
+    def _decode_sequence(self, ids: List[int]) -> str:
+        pieces: List[str] = []
+        chunk: List[int] = []
+        for idx in ids:
+            if idx < self.base_vocab_size:
+                chunk.append(idx)
+                continue
+
+            if chunk:
+                pieces.append(self.encoding.decode(chunk))
+                chunk = []
+
+            token = self.id_to_special.get(idx, f"<unk_{idx}>")
+            pieces.append(token)
+
+        if chunk:
+            pieces.append(self.encoding.decode(chunk))
+
+        return "".join(pieces)
 
 
 def create_tiny_shakespeare_dataloader(

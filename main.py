@@ -10,7 +10,12 @@ except ImportError:  # pragma: no cover - optional dependency in some envs
     wandb = None
 
 from src.data import create_tiny_shakespeare_dataloader
-from src.diff_utils import mask_tokens_from_timesteps, sample_timesteps
+from src.diff_utils import (
+    confidence_based_remask,
+    mask_tokens_from_timesteps,
+    sample_timesteps,
+    uniform_random_remask,
+)
 from src.model import DiffusionModelConfig, TextDiffusionModel
 
 TS_PATH = Path("data/tiny_shakespeare.txt")
@@ -65,6 +70,31 @@ def main():
         default=0.75,
         help="Upper bound (fraction of schedule) for generation timesteps",
     )
+    parser.add_argument(
+        "--generation-remask",
+        type=str,
+        choices=("none", "confidence", "uniform"),
+        default="confidence",
+        help="Remasking strategy to use during generation refinement",
+    )
+    parser.add_argument(
+        "--generation-confidence-threshold",
+        type=float,
+        default=0.85,
+        help="Confidence threshold for confidence-based remasking",
+    )
+    parser.add_argument(
+        "--generation-min-mask",
+        type=int,
+        default=0,
+        help="Minimum number of tokens to keep masked when using confidence remasking",
+    )
+    parser.add_argument(
+        "--generation-remask-ratio",
+        type=float,
+        default=0.2,
+        help="Fraction of tokens to re-mask when using uniform remasking",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -117,6 +147,10 @@ def main():
                 "num_epochs": args.num_epochs,
                 "num_timesteps": args.num_timesteps,
                 "lr": args.lr,
+                "generation_remask": args.generation_remask,
+                "generation_confidence_threshold": args.generation_confidence_threshold,
+                "generation_min_mask": args.generation_min_mask,
+                "generation_remask_ratio": args.generation_remask_ratio,
             },
         )
 
@@ -232,6 +266,12 @@ def main():
                             timestep_batch = torch.full(
                                 (total_samples,), t, device=device, dtype=torch.long
                             )
+                            active = gen_timesteps >= t
+                            if not torch.any(active):
+                                continue
+
+                            active_mask = generation_mask & active.unsqueeze(1)
+
                             logits_step = model(
                                 current_tokens,
                                 timesteps=timestep_batch,
@@ -240,11 +280,13 @@ def main():
                             probs = torch.softmax(logits_step, dim=-1)
                             if pad_token_id is not None:
                                 probs[..., pad_token_id] = 0.0
-                                probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+                            if mask_token_id is not None:
+                                probs[..., mask_token_id] = 0.0
+                            probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
                             sampled = torch.multinomial(
                                 probs.view(-1, probs.size(-1)), 1
                             ).view_as(current_tokens)
-                            current_tokens = torch.where(generation_mask, sampled, current_tokens)
+                            current_tokens = torch.where(active_mask, sampled, current_tokens)
 
                         for i in range(total_samples):
                             originals.append(dataset.decode(reference[i].cpu()))
