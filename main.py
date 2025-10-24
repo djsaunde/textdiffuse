@@ -1,5 +1,6 @@
 import argparse
 import math
+import time
 import warnings
 from pathlib import Path
 from typing import List
@@ -225,6 +226,10 @@ def main():
 
     step = 0
     tokens_seen = 0
+    wall_start = time.perf_counter()
+    last_log_time = wall_start
+    last_log_step = 0
+    last_log_tokens = 0
     for epoch in range(args.num_epochs):
         for input_ids in dataloader:
             step += 1
@@ -269,6 +274,9 @@ def main():
             mask_fraction = num_masked / (batch_size * input_ids.size(1))
 
             if wandb_run is not None:
+                elapsed_total = max(time.perf_counter() - wall_start, 1e-9)
+                steps_per_sec = step / elapsed_total
+                tokens_per_sec = tokens_seen / elapsed_total
                 wandb_run.log(
                     {
                         "train/loss": loss.item(),
@@ -277,14 +285,25 @@ def main():
                         "train/timestep_std": timesteps.float().std(unbiased=False).item(),
                         "train/lr": optim.param_groups[0]["lr"],
                         "train/tokens": tokens_seen,
+                        "train/steps_per_sec": steps_per_sec,
+                        "train/tokens_per_sec": tokens_per_sec,
                     },
                     step=step,
                 )
 
             if step % args.log_every == 0:
+                now = time.perf_counter()
+                elapsed = max(now - last_log_time, 1e-9)
+                step_diff = step - last_log_step
+                token_diff = tokens_seen - last_log_tokens
+                steps_per_sec = step_diff / elapsed
+                tokens_per_sec = token_diff / elapsed
+                last_log_time = now
+                last_log_step = step
+                last_log_tokens = tokens_seen
                 print(
                     f"epoch={epoch} step={step} loss={loss.item():.4f} "
-                    f"avg_mask={mask_fraction:.3f}"
+                    f"avg_mask={mask_fraction:.3f} steps/s={steps_per_sec:.2f} tokens/s={tokens_per_sec:.0f}"
                 )
 
             if args.generate_every > 0 and step % args.generate_every == 0:

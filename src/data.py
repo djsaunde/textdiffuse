@@ -391,27 +391,29 @@ def _download_fineweb_shards(indices: Sequence[int], dest_dir: Path) -> None:
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     for index in indices:
-        if index < 0 or index > FINEWEB_MAX_SHARD:
-            continue
-        filename = f"shard_{index:05d}.parquet"
-        filepath = dest_dir / filename
-        if filepath.exists():
-            continue
+            if index < 0 or index > FINEWEB_MAX_SHARD:
+                continue
+            filename = f"shard_{index:05d}.parquet"
+            filepath = dest_dir / filename
+            if filepath.exists():
+                continue
 
-        url = f"{FINEWEB_BASE_URL}/{filename}"
-        temp_path = filepath.with_suffix(".tmp")
-        try:
-            response = requests.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            with open(temp_path, "wb") as fout:
-                for chunk in response.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        fout.write(chunk)
-            temp_path.rename(filepath)
-        except Exception as exc:  # pragma: no cover - network/IO errors
-            if temp_path.exists():
-                temp_path.unlink(missing_ok=True)
-            raise RuntimeError(f"Failed to download FineWeb shard {index}: {exc}") from exc
+            url = f"{FINEWEB_BASE_URL}/{filename}"
+            temp_path = filepath.with_suffix(".tmp")
+            try:
+                print(f"Downloading FineWeb shard {filename} -> {filepath}...")
+                response = requests.get(url, stream=True, timeout=30)
+                response.raise_for_status()
+                with open(temp_path, "wb") as fout:
+                    for chunk in response.iter_content(chunk_size=1 << 20):
+                        if chunk:
+                            fout.write(chunk)
+                temp_path.rename(filepath)
+                print(f"Finished downloading {filename}")
+            except Exception as exc:  # pragma: no cover - network/IO errors
+                if temp_path.exists():
+                    temp_path.unlink(missing_ok=True)
+                raise RuntimeError(f"Failed to download FineWeb shard {index}: {exc}") from exc
 
 def create_tiny_shakespeare_dataloader(
     text_path: str | Path,
