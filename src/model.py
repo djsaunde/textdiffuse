@@ -58,6 +58,7 @@ class TransformerBlock(nn.Module):
         self.use_flash = _FLASH_AVAILABLE and torch.cuda.is_available()
         self.num_heads = config.n_heads
         self.head_dim = config.d_model // config.n_heads
+        self.dropout = config.dropout
         if not self.use_flash:
             self.self_attn = nn.MultiheadAttention(
                 embed_dim=config.d_model,
