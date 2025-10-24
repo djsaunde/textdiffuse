@@ -8,14 +8,6 @@ from typing import Optional
 import torch
 from torch import Tensor, nn
 
-try:  # pragma: no cover - optional dependency
-    from flash_attn import flash_attn_func
-
-    _FLASH_AVAILABLE = True
-except Exception:  # pragma: no cover - CPU-only setups
-    flash_attn_func = None
-    _FLASH_AVAILABLE = False
-
 
 @dataclass
 class DiffusionModelConfig:
@@ -55,17 +47,15 @@ class TransformerBlock(nn.Module):
 
     def __init__(self, config: DiffusionModelConfig) -> None:
         super().__init__()
-        self.use_flash = _FLASH_AVAILABLE and torch.cuda.is_available()
         self.num_heads = config.n_heads
         self.head_dim = config.d_model // config.n_heads
         self.dropout = config.dropout
-        if not self.use_flash:
-            self.self_attn = nn.MultiheadAttention(
-                embed_dim=config.d_model,
-                num_heads=config.n_heads,
-                dropout=config.dropout,
-                batch_first=True,
-            )
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=config.d_model,
+            num_heads=config.n_heads,
+            dropout=config.dropout,
+            batch_first=True,
+        )
         self.attn_norm = nn.LayerNorm(config.d_model)
         self.ff_norm = nn.LayerNorm(config.d_model)
         ff_hidden = int(config.d_model * config.ff_mult)
@@ -80,53 +70,18 @@ class TransformerBlock(nn.Module):
     def forward(self, x: Tensor, key_padding_mask: Optional[Tensor] = None) -> Tensor:
         residual = x
         attn_input = self.attn_norm(x)
-        if self.use_flash:
-            attn_output = self._flash_attention(attn_input, key_padding_mask)
-        else:
-            attn_output, _ = self.self_attn(
-                attn_input,
-                attn_input,
-                attn_input,
-                need_weights=False,
-                key_padding_mask=key_padding_mask,
-            )
+        attn_output, _ = self.self_attn(
+            attn_input,
+            attn_input,
+            attn_input,
+            need_weights=False,
+            key_padding_mask=key_padding_mask,
+        )
         x = residual + attn_output
         residual = x
         x = self.ff_norm(x)
         x = residual + self.ff(x)
         return x
-
-    def _flash_attention(
-        self,
-        hidden_states: Tensor,
-        key_padding_mask: Optional[Tensor],
-    ) -> Tensor:
-        if not _FLASH_AVAILABLE or flash_attn_func is None:
-            raise RuntimeError("flash-attn is not available")
-
-        if hidden_states.dtype != torch.float16 and hidden_states.dtype != torch.bfloat16:
-            hidden_states = hidden_states.to(torch.float16)
-
-        batch, seq_len, _ = hidden_states.shape
-        qkv = hidden_states.view(batch, seq_len, self.num_heads, self.head_dim)
-        qkv = qkv.permute(0, 2, 1, 3).contiguous()
-
-        if key_padding_mask is not None:
-            attn_mask = key_padding_mask[:, None, None, :]
-        else:
-            attn_mask = None
-
-        attn_output = flash_attn_func(
-            qkv,
-            qkv,
-            qkv,
-            dropout_p=self.dropout if self.training else 0.0,
-            softmax_scale=None,
-            attn_mask=attn_mask,
-        )
-        attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
-        attn_output = attn_output.view(batch, seq_len, self.num_heads * self.head_dim)
-        return attn_output.to(hidden_states.dtype)
 
 
 class TextDiffusionModel(nn.Module):
