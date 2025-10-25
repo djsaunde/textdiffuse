@@ -94,7 +94,7 @@ def triton_attention(
     output = torch.empty_like(q)
 
     if key_padding_mask is not None:
-        mask = key_padding_mask.to(dtype=q.dtype)
+        mask = key_padding_mask.to(device=q.device, dtype=torch.bool)
         neg_inf = torch.tensor(-float("inf"), device=q.device, dtype=q.dtype)
         zero = torch.tensor(0.0, device=q.device, dtype=q.dtype)
         mask = torch.where(mask, neg_inf, zero)
