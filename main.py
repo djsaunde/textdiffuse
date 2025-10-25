@@ -204,6 +204,9 @@ def main():
     model.train()
     optim = torch.optim.AdamW(params=model.parameters(), lr=args.lr)
 
+    num_params = sum(p.numel() for p in model.parameters())
+    print("Total params:", num_params)
+
     mask_token_id = dataset.mask_token_id
     pad_token_id = dataset.pad_token_id
 
