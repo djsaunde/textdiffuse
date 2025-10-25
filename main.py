@@ -212,6 +212,7 @@ def main():
     print(config)
 
     model = TextDiffusionModel(config).to(device)
+    model = torch.compile(model)
     model.train()
     optim = torch.optim.AdamW(params=model.parameters(), lr=args.lr)
 

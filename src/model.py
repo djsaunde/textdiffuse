@@ -94,6 +94,7 @@ class TransformerBlock(nn.Module):
             dropout=config.dropout,
             batch_first=True,
         )
+        self.flex_available = _can_use_flex_attention()
         # self.use_triton = torch.cuda.is_available()
         self.use_triton = False
         self.attn_norm = nn.LayerNorm(config.d_model)
