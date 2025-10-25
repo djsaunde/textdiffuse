@@ -30,7 +30,7 @@ def _attention_kernel(
     BLOCK_N: tl.constexpr,
 ):
     bh_id = tl.program_id(0)
-    b_id = tl.idiv(bh_id, n_heads)
+    b_id = bh_id // n_heads
     start_m = tl.program_id(1) * BLOCK_M
 
     offs_m = start_m + tl.arange(0, BLOCK_M)
