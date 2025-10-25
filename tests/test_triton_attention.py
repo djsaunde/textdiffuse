@@ -28,18 +28,18 @@ def test_triton_attention_matches_mha(seq_len, heads, d_head, padded_fraction):
         key_padding_mask = mask
 
     qkv_float = qkv.to(torch.float32)
+    attn_mask = None
     if key_padding_mask is not None:
-        mask = key_padding_mask
-    else:
-        mask = None
+        mask_float = key_padding_mask[:, None, None, :].to(torch.float32)
+        attn_mask = torch.where(mask_float > 0, torch.full_like(mask_float, -1e9), torch.zeros_like(mask_float))
+
     mha_eval = torch.nn.functional.scaled_dot_product_attention(
         qkv_float,
         qkv_float,
         qkv_float,
-        attn_mask=None,
+        attn_mask=attn_mask,
         dropout_p=0.0,
         is_causal=False,
-        key_padding_mask=mask,
     )
 
     triton_eval = triton_attention(qkv, qkv, qkv, key_padding_mask)
