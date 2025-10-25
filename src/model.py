@@ -7,26 +7,16 @@ from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
+import torch._dynamo as _torch_dynamo
 from torch import Tensor, nn
+from torch.nn.attention.flex_attention import flex_attention as _flex_attention
 
 from .triton_attention import triton_attention
-
-try:
-    from torch.nn.attention.flex_attention import flex_attention as _flex_attention
-except (ImportError, RuntimeError):  # pragma: no cover - optional dependency
-    _flex_attention = None
-
-try:
-    import torch._dynamo as _torch_dynamo
-except Exception:  # pragma: no cover - optional dependency
-    _torch_dynamo = None
 
 
 def _can_use_flex_attention() -> bool:
     """Return True when flex attention is importable and Dynamo is supported."""
 
-    if _flex_attention is None or _torch_dynamo is None:
-        return False
     if not torch.cuda.is_available():
         return False
     try:
@@ -94,7 +84,8 @@ class TransformerBlock(nn.Module):
             dropout=config.dropout,
             batch_first=True,
         )
-        self.flex_available = _can_use_flex_attention()
+        # self.flex_available = _can_use_flex_attention()
+        self.flex_available = False
         # self.use_triton = torch.cuda.is_available()
         self.use_triton = False
         self.attn_norm = nn.LayerNorm(config.d_model)
