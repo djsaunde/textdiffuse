@@ -264,7 +264,7 @@ def main():
                 device=device,
             )
 
-            masked_tokens, mask, _ = mask_tokens_from_timesteps(
+            masked_tokens, mask, ratios = mask_tokens_from_timesteps(
                 input_ids=input_ids,
                 timesteps=timesteps,
                 num_timesteps=args.num_timesteps,
@@ -290,7 +290,17 @@ def main():
                 target_tokens = input_ids[mask]
                 pred_logits = logits[mask]
 
-                loss = F.cross_entropy(pred_logits, target_tokens)
+                per_token_loss = F.cross_entropy(
+                    pred_logits,
+                    target_tokens,
+                    reduction="none",
+                )
+
+                per_token_ratios = ratios[:, None].expand_as(mask)[mask]
+                per_token_ratios = torch.clamp(per_token_ratios, min=1e-6)
+                weighted_loss = per_token_loss / per_token_ratios
+
+                loss = weighted_loss.sum() / (batch_size * input_ids.size(1))
 
             optim.zero_grad()
             loss.backward()
