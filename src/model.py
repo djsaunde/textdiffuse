@@ -111,20 +111,41 @@ class TransformerBlock(nn.Module):
     def forward(self, x: Tensor, key_padding_mask: Optional[Tensor] = None) -> Tensor:
         residual = x
         attn_input = self.attn_norm(x)
-        use_triton = self.use_triton and attn_input.is_cuda
-        if use_triton:
-            qkv = attn_input.view(attn_input.size(0), attn_input.size(1), self.num_heads, self.head_dim)
-            qkv = qkv.permute(0, 2, 1, 3)
-            attn_output = triton_attention(qkv, qkv, qkv, key_padding_mask)
-            attn_output = attn_output.permute(0, 2, 1, 3).reshape_as(attn_input)
-        else:
-            qkv = attn_input.view(attn_input.size(0), attn_input.size(1), self.num_heads, self.head_dim)
-            qkv = qkv.permute(0, 2, 1, 3)
+        batch_size, seq_len, _ = attn_input.shape
+        qkv = attn_input.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        qkv = qkv.permute(0, 2, 1, 3)
+
+        attn_output: Optional[Tensor] = None
+
+        use_flex = (
+            self.flex_available
+            and attn_input.is_cuda
+            and _flex_attention is not None
+            and not (self.training and self.dropout > 0.0)
+        )
+
+        if use_flex:
+            score_mod: Optional[Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]] = None
+            if key_padding_mask is not None:
+                score_mod = _build_padding_score_mod(key_padding_mask.to(device=attn_input.device))
+            try:
+                flex_ctx = _flex_attention(qkv, qkv, qkv, score_mod=score_mod)
+            except Exception:  # pragma: no cover - flex attention may not be supported
+                flex_ctx = None
+            else:
+                attn_output = flex_ctx.permute(0, 2, 1, 3).reshape_as(attn_input)
+
+        if attn_output is None and self.use_triton and attn_input.is_cuda:
+            triton_ctx = triton_attention(qkv, qkv, qkv, key_padding_mask)
+            attn_output = triton_ctx.permute(0, 2, 1, 3).reshape_as(attn_input)
+
+        if attn_output is None:
             attn_mask = None
             if key_padding_mask is not None:
                 mask_float = key_padding_mask[:, None, None, :].to(qkv.dtype)
-                attn_mask = torch.where(mask_float > 0, torch.full_like(mask_float, -1e9), torch.zeros_like(mask_float))
-            attn_output = F.scaled_dot_product_attention(
+                neg_inf = torch.full_like(mask_float, -1e9)
+                attn_mask = torch.where(mask_float > 0, neg_inf, torch.zeros_like(mask_float))
+            sdpa_ctx = F.scaled_dot_product_attention(
                 qkv,
                 qkv,
                 qkv,
@@ -132,7 +153,8 @@ class TransformerBlock(nn.Module):
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=False,
             )
-            attn_output = attn_output.permute(0, 2, 1, 3).reshape_as(attn_input)
+            attn_output = sdpa_ctx.permute(0, 2, 1, 3).reshape_as(attn_input)
+
         x = residual + attn_output
         residual = x
         x = self.ff_norm(x)

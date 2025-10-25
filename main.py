@@ -7,21 +7,7 @@ from typing import List
 
 import torch
 import torch.nn.functional as F
-
-try:
-    import wandb
-except ImportError:  # pragma: no cover - optional dependency in some envs
-    wandb = None
-
-try:  # pragma: no cover - pydantic optional dependency
-    from pydantic import warnings as pydantic_warnings
-
-    warnings.filterwarnings(
-        "ignore",
-        category=pydantic_warnings.UnsupportedFieldAttributeWarning,
-    )
-except Exception:
-    pass
+import wandb
 
 from src.data import create_fineweb_dataloader, create_tiny_shakespeare_dataloader
 from src.diff_utils import (
@@ -33,6 +19,8 @@ from src.diff_utils import (
 from src.model import DiffusionModelConfig, TextDiffusionModel
 
 TS_PATH = Path("data/tiny_shakespeare.txt")
+
+torch.set_float32_matmul_precision('high')
 
 
 def main():
