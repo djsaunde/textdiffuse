@@ -38,7 +38,7 @@ def _attention_kernel(
     offs_d = tl.arange(0, d_head)
 
     q_ptrs = q_ptr + bh_id * stride_q_bh + offs_m[:, None] * stride_q_m + offs_d[None, :] * stride_q_d
-    q = tl.load(q_ptrs, mask=(offs_m[:, None] < n_ctx), other=0.0)
+    q = tl.load(q_ptrs, mask=(offs_m[:, None] < n_ctx), other=0.0).to(tl.float32)
 
     m_i = tl.full((BLOCK_M,), -float("inf"), dtype=tl.float32)
     l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
@@ -49,14 +49,14 @@ def _attention_kernel(
     for start_n in range(0, n_ctx, BLOCK_N):
         k_ptrs = k_ptr + bh_id * stride_k_bh + (start_n + offs_n)[None, :] * stride_k_m + offs_d[:, None] * stride_k_d
         v_ptrs = v_ptr + bh_id * stride_v_bh + (start_n + offs_n)[:, None] * stride_v_m + offs_d[None, :] * stride_v_d
-        k = tl.load(k_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0.0)
-        v = tl.load(v_ptrs, mask=(start_n + offs_n)[:, None] < n_ctx, other=0.0)
+        k = tl.load(k_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0.0).to(tl.float32)
+        v = tl.load(v_ptrs, mask=(start_n + offs_n)[:, None] < n_ctx, other=0.0).to(tl.float32)
 
         attn_scores = tl.dot(q, k, allow_tf32=True) * scale
 
         if has_mask:
             mask_ptrs = mask_ptr + b_id * stride_mask_b + (start_n + offs_n)[None, :] * stride_mask_m
-            mask_vals = tl.load(mask_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0.0)
+            mask_vals = tl.load(mask_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0.0).to(tl.float32)
             attn_scores += mask_vals
 
         m_i_new = tl.maximum(m_i, tl.max(attn_scores, axis=1))
