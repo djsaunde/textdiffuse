@@ -46,6 +46,8 @@ def _attention_kernel(
 
     scale = 1.0 / math.sqrt(d_head)
 
+    neg_inf = -1e9
+
     for start_n in range(0, n_ctx, BLOCK_N):
         k_ptrs = k_ptr + bh_id * stride_k_bh + (start_n + offs_n)[None, :] * stride_k_m + offs_d[:, None] * stride_k_d
         v_ptrs = v_ptr + bh_id * stride_v_bh + (start_n + offs_n)[:, None] * stride_v_m + offs_d[None, :] * stride_v_d
@@ -56,8 +58,8 @@ def _attention_kernel(
 
         if has_mask:
             mask_ptrs = mask_ptr + b_id * stride_mask_b + (start_n + offs_n)[None, :] * stride_mask_m
-            mask_vals = tl.load(mask_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0.0).to(tl.float32)
-            attn_scores += mask_vals
+            mask_vals = tl.load(mask_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0).to(tl.float32)
+            attn_scores = tl.where(mask_vals[None, :] > 0, neg_inf, attn_scores)
 
         m_i_new = tl.maximum(m_i, tl.max(attn_scores, axis=1))
         p = tl.exp(attn_scores - m_i_new[:, None])
@@ -65,7 +67,11 @@ def _attention_kernel(
         acc = acc * (tl.exp(m_i - m_i_new)[:, None]) + tl.dot(p, v)
         m_i = m_i_new
 
-    acc = acc / l_i[:, None]
+    acc = tl.where(l_i[:, None] == 0, 0.0, acc / l_i[:, None])
+    if has_mask:
+        row_mask_ptrs = mask_ptr + b_id * stride_mask_b + offs_m * stride_mask_m
+        row_mask = tl.load(row_mask_ptrs, mask=offs_m < n_ctx, other=0).to(tl.float32)
+        acc = tl.where(row_mask[:, None] > 0, 0.0, acc)
     out_ptrs = out_ptr + bh_id * stride_out_bh + offs_m[:, None] * stride_out_m + offs_d[None, :] * stride_out_d
     tl.store(out_ptrs, acc, mask=offs_m[:, None] < n_ctx)
 
@@ -96,12 +102,9 @@ def triton_attention(
     output = torch.empty_like(q)
 
     if key_padding_mask is not None:
-        mask = key_padding_mask.to(device=q.device, dtype=torch.bool)
-        neg_inf = torch.tensor(-float("inf"), device=q.device, dtype=q.dtype)
-        zero = torch.tensor(0.0, device=q.device, dtype=q.dtype)
-        mask = torch.where(mask, neg_inf, zero)
+        mask = key_padding_mask.to(device=q.device, dtype=torch.uint8).contiguous()
     else:
-        mask = torch.zeros((1, seq_len), device=q.device, dtype=q.dtype)
+        mask = torch.zeros((1, seq_len), device=q.device, dtype=torch.uint8)
 
     q_bh = q.view(batch * heads, seq_len, head_dim)
     k_bh = k.view(batch * heads, seq_len, head_dim)

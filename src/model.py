@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from .triton_attention import triton_attention
@@ -77,20 +78,21 @@ class TransformerBlock(nn.Module):
         if use_triton:
             qkv = attn_input.view(attn_input.size(0), attn_input.size(1), self.num_heads, self.head_dim)
             qkv = qkv.permute(0, 2, 1, 3)
-            if key_padding_mask is not None:
-                mask = key_padding_mask
-            else:
-                mask = None
-            attn_output = triton_attention(qkv, qkv, qkv, mask)
+            attn_output = triton_attention(qkv, qkv, qkv, key_padding_mask)
             attn_output = attn_output.permute(0, 2, 1, 3).reshape_as(attn_input)
         else:
-            attn_output, _ = self.self_attn(
-                attn_input,
-                attn_input,
-                attn_input,
-                need_weights=False,
+            qkv = attn_input.view(attn_input.size(0), attn_input.size(1), self.num_heads, self.head_dim)
+            qkv = qkv.permute(0, 2, 1, 3)
+            attn_output = F.scaled_dot_product_attention(
+                qkv,
+                qkv,
+                qkv,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=False,
                 key_padding_mask=key_padding_mask,
             )
+            attn_output = attn_output.permute(0, 2, 1, 3).reshape_as(attn_input)
         x = residual + attn_output
         residual = x
         x = self.ff_norm(x)
