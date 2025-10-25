@@ -44,13 +44,15 @@ def _attention_kernel(
     l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
     acc = tl.zeros((BLOCK_M, d_head), dtype=tl.float32)
 
+    scale = 1.0 / math.sqrt(d_head)
+
     for start_n in range(0, n_ctx, BLOCK_N):
         k_ptrs = k_ptr + bh_id * stride_k_bh + (start_n + offs_n)[None, :] * stride_k_m + offs_d[:, None] * stride_k_d
         v_ptrs = v_ptr + bh_id * stride_v_bh + (start_n + offs_n)[:, None] * stride_v_m + offs_d[None, :] * stride_v_d
         k = tl.load(k_ptrs, mask=(start_n + offs_n)[None, :] < n_ctx, other=0.0)
         v = tl.load(v_ptrs, mask=(start_n + offs_n)[:, None] < n_ctx, other=0.0)
 
-        attn_scores = tl.dot(q, k, allow_tf32=True) / math.sqrt(d_head)
+        attn_scores = tl.dot(q, k, allow_tf32=True) * scale
 
         if has_mask:
             mask_ptrs = mask_ptr + b_id * stride_mask_b + (start_n + offs_n)[None, :] * stride_mask_m
