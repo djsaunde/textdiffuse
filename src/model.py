@@ -3,13 +3,48 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
 from .triton_attention import triton_attention
+
+try:
+    from torch.nn.attention.flex_attention import flex_attention as _flex_attention
+except (ImportError, RuntimeError):  # pragma: no cover - optional dependency
+    _flex_attention = None
+
+try:
+    import torch._dynamo as _torch_dynamo
+except Exception:  # pragma: no cover - optional dependency
+    _torch_dynamo = None
+
+
+def _can_use_flex_attention() -> bool:
+    """Return True when flex attention is importable and Dynamo is supported."""
+
+    if _flex_attention is None or _torch_dynamo is None:
+        return False
+    if not torch.cuda.is_available():
+        return False
+    try:
+        return bool(_torch_dynamo.is_dynamo_supported())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _build_padding_score_mod(mask: Tensor) -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]:
+    """Create a score modifier for flex attention given a key padding mask."""
+
+    mask = mask.to(dtype=torch.bool)
+
+    def score_mod(score: Tensor, batch: Tensor, head: Tensor, q_idx: Tensor, k_idx: Tensor) -> Tensor:
+        masked = mask[batch, k_idx]
+        return torch.where(masked, score.new_tensor(float("-inf")), score)
+
+    return score_mod
 
 
 @dataclass
@@ -59,7 +94,8 @@ class TransformerBlock(nn.Module):
             dropout=config.dropout,
             batch_first=True,
         )
-        self.use_triton = torch.cuda.is_available()
+        # self.use_triton = torch.cuda.is_available()
+        self.use_triton = False
         self.attn_norm = nn.LayerNorm(config.d_model)
         self.ff_norm = nn.LayerNorm(config.d_model)
         ff_hidden = int(config.d_model * config.ff_mult)
@@ -83,14 +119,17 @@ class TransformerBlock(nn.Module):
         else:
             qkv = attn_input.view(attn_input.size(0), attn_input.size(1), self.num_heads, self.head_dim)
             qkv = qkv.permute(0, 2, 1, 3)
+            attn_mask = None
+            if key_padding_mask is not None:
+                mask_float = key_padding_mask[:, None, None, :].to(qkv.dtype)
+                attn_mask = torch.where(mask_float > 0, torch.full_like(mask_float, -1e9), torch.zeros_like(mask_float))
             attn_output = F.scaled_dot_product_attention(
                 qkv,
                 qkv,
                 qkv,
-                attn_mask=None,
+                attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=False,
-                key_padding_mask=key_padding_mask,
             )
             attn_output = attn_output.permute(0, 2, 1, 3).reshape_as(attn_input)
         x = residual + attn_output
